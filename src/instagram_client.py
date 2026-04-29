@@ -41,8 +41,10 @@ class InstagramClient:
         self._client = Client()
         self._client.delay_range = [2, 5]
         self._target_user_id: Optional[str] = None
+        self._target_cache_for: Optional[str] = None
         self._authed = asyncio.Event()
         self._username: Optional[str] = None
+        self._auth_lock = asyncio.Lock()
 
     @property
     def auth_ready(self) -> asyncio.Event:
@@ -111,9 +113,10 @@ class InstagramClient:
         return ok
 
     async def login_with_sessionid(self, sessionid: str) -> str:
-        username = await asyncio.to_thread(self._login_with_sessionid_sync, sessionid)
-        self._authed.set()
-        return username
+        async with self._auth_lock:
+            username = await asyncio.to_thread(self._login_with_sessionid_sync, sessionid)
+            self._authed.set()
+            return username
 
     def mark_auth_invalid(self) -> None:
         """Called when an API call surfaced an auth error mid-runtime."""
@@ -124,21 +127,77 @@ class InstagramClient:
         except Exception:
             pass
 
+    # ---------- pending sessionid (background retry) ----------
+
+    def set_pending_sessionid(self, sessionid: str) -> None:
+        sessionid = sessionid.strip().strip('"').strip("'")
+        if not sessionid:
+            self.clear_pending_sessionid()
+            return
+        path = self._cfg.pending_session_file
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(sessionid)
+
+    def clear_pending_sessionid(self) -> None:
+        try:
+            if self._cfg.pending_session_file.exists():
+                self._cfg.pending_session_file.unlink()
+        except Exception as e:
+            log.warning("Could not clear pending sessionid: %s", e)
+
+    def read_pending_sessionid(self) -> Optional[str]:
+        path = self._cfg.pending_session_file
+        if not path.exists():
+            return None
+        try:
+            sid = path.read_text().strip()
+            return sid or None
+        except Exception:
+            return None
+
+    async def try_pending_login(self) -> tuple[bool, str]:
+        """Attempt auth using the stored pending sessionid. Never raises auth errors.
+
+        Returns (True, username) on success — pending file is cleared and
+        auth_ready event set. Returns (False, error_message) on any failure.
+        """
+        sid = self.read_pending_sessionid()
+        if sid is None:
+            return False, "no pending sessionid"
+        async with self._auth_lock:
+            if self._authed.is_set():
+                self.clear_pending_sessionid()
+                return True, self._username or ""
+            try:
+                username = await asyncio.to_thread(self._login_with_sessionid_sync, sid)
+            except IGAuthError as e:
+                return False, str(e)
+            except Exception as e:
+                return False, f"errore inatteso: {e}"
+            self._authed.set()
+            self.clear_pending_sessionid()
+            return True, username
+
     # ---------- target monitoring ----------
 
-    def _resolve_target_sync(self) -> str:
-        if self._target_user_id is None:
-            uid = self._client.user_id_from_username(self._cfg.ig_target)
+    def _resolve_target_sync(self, target: str) -> str:
+        if self._target_user_id is None or self._target_cache_for != target:
+            uid = self._client.user_id_from_username(target)
             self._target_user_id = str(uid)
-            log.info("Resolved target @%s -> id=%s", self._cfg.ig_target, uid)
+            self._target_cache_for = target
+            log.info("Resolved target @%s -> id=%s", target, uid)
         return self._target_user_id
 
-    def _fetch_recent_sync(self, amount: int) -> list[Media]:
-        uid = self._resolve_target_sync()
+    def _fetch_recent_sync(self, target: str, amount: int) -> list[Media]:
+        uid = self._resolve_target_sync(target)
         return self._client.user_medias(uid, amount=amount)
 
-    async def fetch_recent(self, amount: int = 6) -> list[Media]:
-        return await asyncio.to_thread(self._fetch_recent_sync, amount)
+    async def fetch_recent(self, target: str, amount: int = 6) -> list[Media]:
+        return await asyncio.to_thread(self._fetch_recent_sync, target, amount)
+
+    def reset_target_cache(self) -> None:
+        self._target_user_id = None
+        self._target_cache_for = None
 
     # ---------- download ----------
 

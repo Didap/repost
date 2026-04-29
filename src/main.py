@@ -6,7 +6,8 @@ import logging
 import signal
 
 from . import config as config_mod
-from .instagram_client import IGAuthError, InstagramClient
+from .auth_retrier import AuthRetrier
+from .instagram_client import InstagramClient
 from .orchestrator import Orchestrator
 from .state import State
 from .telegram_bot import TelegramBot
@@ -15,18 +16,32 @@ log = logging.getLogger(__name__)
 
 
 async def _bootstrap_auth(cfg, ig: InstagramClient, tg: TelegramBot) -> None:
-    """Establish a session at startup if we can; otherwise ask the user via TG."""
+    """Establish a session at startup if we can; otherwise ask the user via TG.
+
+    A pending sessionid on disk (or one provided via IG_SESSIONID env) is
+    enqueued for the background retrier — we never reject at startup.
+    """
     if await ig.try_load_session():
         return
 
-    if cfg.bootstrap_sessionid:
-        log.info("Trying bootstrap sessionid from env")
-        try:
-            await ig.login_with_sessionid(cfg.bootstrap_sessionid)
+    # honor a sessionid already pending from a previous run / restart
+    pending = ig.read_pending_sessionid()
+    if pending is None and cfg.bootstrap_sessionid:
+        log.info("Seeding pending sessionid from IG_SESSIONID env")
+        ig.set_pending_sessionid(cfg.bootstrap_sessionid)
+        pending = cfg.bootstrap_sessionid
+
+    if pending is not None:
+        success, info = await ig.try_pending_login()
+        if success:
+            log.info("Bootstrap sessionid accepted (user @%s)", info)
             return
-        except IGAuthError as e:
-            log.error("Bootstrap sessionid rejected: %s", e)
-            await tg.notify(f"⚠️ <code>IG_SESSIONID</code> nell'env è invalido: <code>{e}</code>")
+        log.warning("Bootstrap sessionid not accepted yet: %s. Retrier will keep trying.", info)
+        await tg.notify(
+            "💾 Sessionid pendente in retry automatico in background. "
+            "Ti scrivo appena IG lo accetta."
+        )
+        return
 
     await tg.request_auth()
 
@@ -54,6 +69,7 @@ async def _run() -> None:
     await _bootstrap_auth(cfg, ig, tg)
 
     orchestrator = Orchestrator(cfg, state, ig, tg)
+    retrier = AuthRetrier(ig, tg)
 
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -64,13 +80,16 @@ async def _run() -> None:
             pass  # windows
 
     poll_task = asyncio.create_task(orchestrator.run())
+    retrier_task = asyncio.create_task(retrier.run())
 
     await stop_event.wait()
     log.info("Shutting down…")
     orchestrator.stop()
-    await asyncio.wait([poll_task], timeout=5)
-    if not poll_task.done():
-        poll_task.cancel()
+    retrier.stop()
+    await asyncio.wait([poll_task, retrier_task], timeout=5)
+    for t in (poll_task, retrier_task):
+        if not t.done():
+            t.cancel()
     await tg.stop()
 
 

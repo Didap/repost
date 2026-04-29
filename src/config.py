@@ -40,6 +40,10 @@ class Config:
         return self.data_dir / "ig_session.json"
 
     @property
+    def pending_session_file(self) -> Path:
+        return self.data_dir / "pending_sessionid"
+
+    @property
     def state_file(self) -> Path:
         return self.data_dir / "state.json"
 

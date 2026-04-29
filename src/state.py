@@ -28,6 +28,8 @@ class PendingPost:
 class _StateData:
     seen_pks: list[str] = field(default_factory=list)
     pending: dict[str, dict] = field(default_factory=dict)
+    target: Optional[str] = None  # overrides cfg.ig_target if set
+    pending_initial_skip: bool = False  # next tick should mark all as seen
 
 
 class State:
@@ -44,6 +46,8 @@ class State:
                 raw = json.loads(path.read_text())
                 s._data.seen_pks = list(raw.get("seen_pks", []))
                 s._data.pending = dict(raw.get("pending", {}))
+                s._data.target = raw.get("target")
+                s._data.pending_initial_skip = bool(raw.get("pending_initial_skip", False))
             except Exception as e:
                 log.warning("Could not load state, starting fresh: %s", e)
         return s
@@ -103,6 +107,27 @@ class State:
 
     def all_pending(self) -> list[PendingPost]:
         return [PendingPost(**v) for v in self._data.pending.values()]
+
+    # --- target ---
+
+    def get_target(self, default: str) -> str:
+        return self._data.target or default
+
+    async def set_target(self, target: str) -> None:
+        async with self._lock:
+            self._data.target = target
+            # changing target: skip current historical batch to avoid flooding
+            self._data.pending_initial_skip = True
+            self._flush()
+
+    def should_skip_initial(self) -> bool:
+        return self._data.pending_initial_skip
+
+    async def clear_initial_skip(self) -> None:
+        async with self._lock:
+            if self._data.pending_initial_skip:
+                self._data.pending_initial_skip = False
+                self._flush()
 
 
 def cleanup_media(post: PendingPost) -> None:

@@ -45,9 +45,15 @@ class Orchestrator:
             if self._stop.is_set():
                 return
 
+            skip_processing = (
+                (first_run and self._cfg.skip_initial)
+                or self._state.should_skip_initial()
+            )
+
             try:
-                await self._tick(skip_processing=first_run and self._cfg.skip_initial)
+                await self._tick(skip_processing=skip_processing)
                 first_run = False
+                await self._state.clear_initial_skip()
             except (LoginRequired, ChallengeRequired) as e:
                 log.warning("Session no longer valid: %s", e)
                 self._ig.mark_auth_invalid()
@@ -88,8 +94,9 @@ class Orchestrator:
             log.info("Orchestrator resumed: auth ready")
 
     async def _tick(self, *, skip_processing: bool) -> None:
-        log.info("Polling @%s …", self._cfg.ig_target)
-        recent = await self._ig.fetch_recent(amount=6)
+        target = self._state.get_target(default=self._cfg.ig_target)
+        log.info("Polling @%s …", target)
+        recent = await self._ig.fetch_recent(target, amount=6)
         # IG returns newest first; reverse so approval messages arrive in order
         recent = list(reversed(recent))
 
@@ -105,13 +112,13 @@ class Orchestrator:
             if skip_processing:
                 continue
 
-            await self._enqueue(media)
+            await self._enqueue(media, target)
 
         if skip_processing and new_pks:
             await self._state.mark_seen_bulk(new_pks)
             log.info("First run: marked %d historical posts as seen", len(new_pks))
 
-    async def _enqueue(self, media) -> None:
+    async def _enqueue(self, media, target: str) -> None:
         pk = str(media.pk)
         log.info("New post %s (type=%s), downloading…", pk, media.media_type)
         try:
@@ -126,7 +133,7 @@ class Orchestrator:
         post = PendingPost(
             pk=pk,
             code=media.code,
-            target=self._cfg.ig_target,
+            target=target,
             caption=media.caption_text or "",
             media_type=media.media_type,
             product_type=media.product_type or "feed",

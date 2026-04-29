@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 
 from .config import Config
-from .instagram_client import ALBUM, PHOTO, VIDEO, IGAuthError, InstagramClient
+from .instagram_client import ALBUM, PHOTO, VIDEO, InstagramClient
 from .state import PendingPost, State, cleanup_media
 
 log = logging.getLogger(__name__)
@@ -74,6 +74,8 @@ class TelegramBot:
         self._app.add_handler(CommandHandler("status", self._cmd_status))
         self._app.add_handler(CommandHandler("pending", self._cmd_pending))
         self._app.add_handler(CommandHandler("auth", self._cmd_auth))
+        self._app.add_handler(CommandHandler("cancel_auth", self._cmd_cancel_auth))
+        self._app.add_handler(CommandHandler("target", self._cmd_target))
         self._app.add_handler(CallbackQueryHandler(self._on_callback))
 
     # ---------- public API used by orchestrator ----------
@@ -212,13 +214,23 @@ class TelegramBot:
 
     # ---------- commands ----------
 
+    def _current_target(self) -> str:
+        return self._state.get_target(default=self._cfg.ig_target)
+
+    def _target_link(self, target: str) -> str:
+        return f"<a href=\"https://www.instagram.com/{target}/\">@{target}</a>"
+
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.effective_chat.id != self._cfg.tg_chat_id:
             return
+        target = self._current_target()
         if self._ig.auth_ready.is_set():
             await update.message.reply_text(
-                f"Bot attivo. Sto monitorando @{self._cfg.ig_target} "
-                f"ogni {self._cfg.poll_interval}s e ti scrivo quando vedo un nuovo post."
+                f"Bot attivo. Sto monitorando {self._target_link(target)} "
+                f"ogni {self._cfg.poll_interval}s e ti scrivo quando vedo un nuovo post.\n\n"
+                "Comandi: /status /target /pending /auth /cancel_auth",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
             )
         else:
             await update.message.reply_text(
@@ -231,16 +243,22 @@ class TelegramBot:
         if update.effective_chat.id != self._cfg.tg_chat_id:
             return
         pending = self._state.all_pending()
-        auth_status = (
-            f"✅ Autenticato come @{self._ig.username}"
-            if self._ig.auth_ready.is_set()
-            else "⚠️ Non autenticato — manda /auth <sessionid>"
-        )
+        target = self._current_target()
+        if self._ig.auth_ready.is_set():
+            auth_status = f"✅ Autenticato come <b>@{self._ig.username}</b>"
+        elif self._ig.read_pending_sessionid() is not None:
+            auth_status = (
+                "⏳ Sessionid in attesa di validazione (retry automatico in background)"
+            )
+        else:
+            auth_status = "⚠️ Non autenticato — manda <code>/auth &lt;sessionid&gt;</code>"
         await update.message.reply_text(
             f"{auth_status}\n"
-            f"Target: @{self._cfg.ig_target}\n"
+            f"Target: {self._target_link(target)}\n"
             f"Pending: {len(pending)}\n"
-            f"Polling: {self._cfg.poll_interval}s"
+            f"Polling: {self._cfg.poll_interval}s",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
         )
 
     async def _cmd_pending(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -271,20 +289,75 @@ class TelegramBot:
         except Exception:
             pass
 
+        # save first so the background retrier picks it up even if the
+        # immediate verify call below somehow blows up
+        self._ig.set_pending_sessionid(sessionid)
+
         progress = await self._app.bot.send_message(
-            chat_id=self._cfg.tg_chat_id, text="⏳ Verifico il sessionid…"
+            chat_id=self._cfg.tg_chat_id, text="⏳ Salvo e provo a validare il sessionid…"
         )
-        try:
-            username = await self._ig.login_with_sessionid(sessionid)
-        except IGAuthError as e:
-            await progress.edit_text(f"❌ {e}")
-            return
-        except Exception as e:
-            log.exception("Unexpected error during /auth")
-            await progress.edit_text(f"❌ Errore inatteso: <code>{e}</code>", parse_mode=ParseMode.HTML)
+        success, info = await self._ig.try_pending_login()
+        if success:
+            await progress.edit_text(
+                text=f"✅ Autenticato come <b>@{info}</b>. Polling attivo.",
+                parse_mode=ParseMode.HTML,
+            )
             return
 
         await progress.edit_text(
-            text=f"✅ Autenticato come <b>@{username}</b>. Polling attivo.",
+            text=(
+                "💾 Sessionid salvato.\n"
+                f"IG ha rifiutato adesso (<code>{info}</code>) — "
+                "probabile challenge dovuto all'IP del server (datacenter).\n\n"
+                "Riprovo automaticamente in background con backoff dolce "
+                "(10/20/40/60 min, poi ogni ora). "
+                "Ti scrivo appena passa.\n\n"
+                "Per accelerare: sblocca la sessione su "
+                "<a href=\"https://instagram.com/accounts/activity/?type=login_activity\">"
+                "instagram.com/accounts/activity</a>.\n"
+                "Per annullare: /cancel_auth"
+            ),
             parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
+
+    async def _cmd_cancel_auth(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.effective_chat.id != self._cfg.tg_chat_id:
+            return
+        had_pending = self._ig.read_pending_sessionid() is not None
+        self._ig.clear_pending_sessionid()
+        if had_pending:
+            await update.message.reply_text("✖️ Pending sessionid annullato.")
+        else:
+            await update.message.reply_text("Nessun sessionid in attesa.")
+
+    async def _cmd_target(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if update.effective_chat.id != self._cfg.tg_chat_id:
+            return
+        current = self._current_target()
+        if not context.args:
+            await update.message.reply_text(
+                f"🎯 Target attuale: {self._target_link(current)}\n\n"
+                f"Per cambiarlo: <code>/target nuovo_username</code>",
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            return
+
+        new_target = context.args[0].strip().lstrip("@")
+        if not new_target or " " in new_target:
+            await update.message.reply_text("❌ Username non valido.")
+            return
+        if new_target == current:
+            await update.message.reply_text(f"Target già impostato su @{new_target}.")
+            return
+
+        await self._state.set_target(new_target)
+        self._ig.reset_target_cache()
+        await update.message.reply_text(
+            f"✅ Target cambiato: ora monitoro {self._target_link(new_target)}.\n"
+            "Salto i post storici per evitare di inondarti la chat — "
+            "ti scrivo solo i nuovi.",
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
         )
