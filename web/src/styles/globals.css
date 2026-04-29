@@ -1,0 +1,88 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+
+    /* dark default — Ditto-flavoured */
+    --background: 0 0% 4%;          /* #0a0a0a */
+    --foreground: 0 0% 90%;         /* #e5e5e5 */
+
+    --card: 0 0% 8%;                /* #141414 */
+    --card-foreground: 0 0% 90%;
+
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 90%;
+
+    --primary: 142 96% 46%;         /* #03e65b */
+    --primary-foreground: 0 0% 4%;
+
+    --secondary: 0 0% 12%;          /* #1e1e1e */
+    --secondary-foreground: 0 0% 90%;
+
+    --muted: 0 0% 12%;
+    --muted-foreground: 215 16% 65%;  /* #94a3b8 */
+
+    --accent: 330 100% 60%;         /* #ff3386 */
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 330 100% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --warning: 41 100% 60%;         /* #ffc533 */
+
+    --border: 0 0% 63% / 0.2;
+    --input: 0 0% 63% / 0.2;
+    --ring: 142 96% 46%;
+
+    --radius: 12px;
+  }
+
+  * { border-color: hsl(var(--border)); }
+  html, body, #root { height: 100%; }
+  body {
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    font-family: var(--font-sans);
+    font-feature-settings: "ss01", "cv11";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* subtle gradient texture in the background — adds dimensionality */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: -1;
+    background:
+      radial-gradient(1200px 600px at 20% -10%, hsl(var(--primary) / 0.08), transparent 60%),
+      radial-gradient(800px 500px at 110% 110%, hsl(var(--accent) / 0.06), transparent 65%);
+  }
+
+  ::selection { background: hsl(var(--primary) / 0.4); color: hsl(var(--foreground)); }
+}
+
+@layer utilities {
+  .text-gradient {
+    background: linear-gradient(120deg, hsl(var(--primary)), hsl(45 100% 60%) 60%, hsl(var(--accent)));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .blob {
+    background: linear-gradient(135deg, hsl(var(--primary)), hsl(var(--accent)));
+    border-radius: 60% 40% 60% 40% / 60% 50% 50% 40%;
+    animation: blob 8s ease-in-out infinite;
+  }
+
+  .glass {
+    background: linear-gradient(180deg, hsl(var(--card) / 0.7), hsl(var(--card) / 0.5));
+    backdrop-filter: blur(8px);
+  }
+}
