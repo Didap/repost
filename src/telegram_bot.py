@@ -5,6 +5,7 @@ import logging
 from pathlib import Path
 
 from telegram import (
+    BotCommand,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
@@ -82,6 +83,14 @@ class TelegramBot:
 
     async def start(self) -> None:
         await self._app.initialize()
+        await self._app.bot.set_my_commands([
+            BotCommand("status", "stato bot, target e auth"),
+            BotCommand("target", "vedi/cambia pagina IG monitorata"),
+            BotCommand("pending", "rimanda i post in attesa"),
+            BotCommand("auth", "imposta sessionid (poi retry in background)"),
+            BotCommand("cancel_auth", "annulla un sessionid in attesa"),
+            BotCommand("start", "info e istruzioni auth"),
+        ])
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
         log.info("Telegram bot started")
