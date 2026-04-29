@@ -9,3 +9,4 @@ venv/
 .claude/
 web/node_modules/
 web/dist/
+web/tsconfig.tsbuildinfo
