@@ -15,8 +15,8 @@ services:
       DASHBOARD_HOST: ${DASHBOARD_HOST:-0.0.0.0}
       DASHBOARD_PORT: ${DASHBOARD_PORT:-8000}
       COOKIE_SECRET: ${COOKIE_SECRET:-}
-    ports:
-      - "${DASHBOARD_PORT:-8000}:8000"
+    expose:
+      - "8000"
     volumes:
       - repost_data:/app/data
 
