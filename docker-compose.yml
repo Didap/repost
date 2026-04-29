@@ -1,0 +1,20 @@
+services:
+  repost:
+    build: .
+    image: repost:latest
+    container_name: repost
+    restart: unless-stopped
+    environment:
+      IG_TARGET_USERNAME: ${IG_TARGET_USERNAME}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      TELEGRAM_CHAT_ID: ${TELEGRAM_CHAT_ID}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-600}
+      CAPTION_TEMPLATE: ${CAPTION_TEMPLATE:-"{caption}"}
+      SKIP_INITIAL: ${SKIP_INITIAL:-true}
+      # Optional bootstrap: if you want to seed the session via env on first run
+      IG_SESSIONID: ${IG_SESSIONID:-}
+    volumes:
+      - repost_data:/app/data
+
+volumes:
+  repost_data:
